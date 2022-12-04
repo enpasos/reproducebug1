@@ -1,0 +1,30 @@
+[versions]
+lombok = "1.18.24"
+djl = "0.21.0-SNAPSHOT"
+pytorch = "1.12.1"
+slf4j = "2.0.3"
+springboot = "3.0.0"
+protobuf = "3.21.8"
+
+
+[libraries]
+djl-api = { module = "ai.djl:api", version.ref = "djl" }
+djl-model-zoo = { module = "ai.djl:model-zoo", version.ref = "djl" }
+djl-basicdataset = { module = "ai.djl:basicdataset", version.ref = "djl" }
+djl-pytorch-engine = { module = "ai.djl.pytorch:pytorch-engine", version.ref = "djl" }
+djl-pytorch-model-zoo = { module = "ai.djl.pytorch:pytorch-model-zoo", version.ref = "djl" }
+djl-pytorch-native-cu116 = { module = "ai.djl.pytorch:pytorch-native-cu116", version.ref = "pytorch" }
+
+
+commons-cli = { module = "commons-cli:commons-cli", version = "1.5.0" }
+
+lombok = { module = "org.projectlombok:lombok", version.ref = "lombok" }
+
+slf4j-api = { module = "org.slf4j:slf4j-api", version.ref = "slf4j" }
+slf4j-simple = { module = "org.slf4j:slf4j-simple", version.ref = "slf4j" }
+
+[bundles]
+djl = ["djl-model-zoo", "djl-basicdataset", "djl-pytorch-engine", "djl-pytorch-model-zoo", "djl-pytorch-native-cu116"]
+
+[plugins]
+
