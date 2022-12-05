@@ -18,21 +18,38 @@
 package com.enpasos.bugs;
 
 
+import ai.djl.Device;
+import ai.djl.util.cuda.CudaUtils;
 import lombok.Data;
 
+import java.lang.management.MemoryUsage;
+
 @Data
-public class Duration {
-    private long value;
+public class DurAndMem {
+    private long dur;
+    private long mem;
 
     public synchronized void reset() {
-        value = 0;
+        dur = 0;
+        mem = 0;
     }
 
     public synchronized void on() {
-        value -= System.currentTimeMillis();
+        dur -= System.currentTimeMillis();
+       // mem -= calculateMem();
     }
 
+
+
     public synchronized void off() {
-        value += System.currentTimeMillis();
+        dur += System.currentTimeMillis();
+        mem = calculateMem();
+    }
+
+
+    private long calculateMem() {
+        Device device = Device.gpu(0);
+        MemoryUsage mem = CudaUtils.getGpuMemory(device);
+        return mem.getCommitted();
     }
 }

@@ -9,10 +9,8 @@ import ai.djl.nn.Block;
 import ai.djl.training.DefaultTrainingConfig;
 import ai.djl.training.EasyTrain;
 import ai.djl.training.Trainer;
-import ai.djl.training.TrainingResult;
 import ai.djl.training.dataset.Dataset;
 import ai.djl.training.dataset.RandomAccessDataset;
-import ai.djl.training.evaluator.Accuracy;
 import ai.djl.training.listener.SaveModelTrainingListener;
 import ai.djl.training.listener.TrainingListener;
 import ai.djl.training.loss.Loss;
@@ -62,24 +60,25 @@ public final class Main {
             DefaultTrainingConfig config = setupTrainingConfig(arguments);
             Shape inputShape = new Shape(1, 1, Mnist.IMAGE_HEIGHT, Mnist.IMAGE_WIDTH);
 
-            List<Long> durations = new ArrayList<>();
+            List<DurAndMem> durations = new ArrayList<>();
 
-                try (Trainer trainer = model.newTrainer(config)) {
-                    for (int epoch = 0; epoch < 100000; epoch++) {
-                        log.info("Training i= {}", epoch);
-                        Duration duration = new Duration();
-                        duration.on();
-                        trainer.setMetrics(new Metrics());
+            try (Trainer trainer = model.newTrainer(config)) {
+                for (int epoch = 0; epoch < 10; epoch++) {
+                    log.info("Training epoch = {}", epoch);
+                    DurAndMem duration = new DurAndMem();
+                    duration.on();
+                    trainer.setMetrics(new Metrics());
 
-                        trainer.initialize(inputShape);
-                        EasyTrain.fit(trainer, 1, trainingSet, validateSet);
+                    trainer.initialize(inputShape);
+                    EasyTrain.fit(trainer, 1, trainingSet, validateSet);
 
-                        duration.off();
-                        durations.add(duration.getValue()/1000);
+                    duration.off();
+                    durations.add(duration);
 
-                        IntStream.range(0, durations.size()).forEach(i -> log.info("duration for epoch {}: {} s", i, durations.get(i)));
-                    }
+                    System.out.println("epoch;duration[s];gpuMem[MiB]");
+                    IntStream.range(0, durations.size()).forEach(i -> System.out.println(i + ";" + durations.get(i).getDur() / 1000 + ";" + durations.get(i).getMem()/1024/1024));
                 }
+            }
 
 
 
