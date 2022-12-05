@@ -56,32 +56,28 @@ public final class Main {
         try (Model model = Model.newInstance("mymodel")) {
             model.setBlock(block);
 
-
             DefaultTrainingConfig config = setupTrainingConfig(arguments);
             Shape inputShape = new Shape(1, 1, Mnist.IMAGE_HEIGHT, Mnist.IMAGE_WIDTH);
 
             List<DurAndMem> durations = new ArrayList<>();
 
             try (Trainer trainer = model.newTrainer(config)) {
+                trainer.setMetrics(new Metrics());
+                trainer.initialize(inputShape);
+
                 for (int epoch = 0; epoch < 10; epoch++) {
                     log.info("Training epoch = {}", epoch);
                     DurAndMem duration = new DurAndMem();
                     duration.on();
-                    trainer.setMetrics(new Metrics());
 
-                    trainer.initialize(inputShape);
                     EasyTrain.fit(trainer, 1, trainingSet, validateSet);
 
                     duration.off();
                     durations.add(duration);
-
                     System.out.println("epoch;duration[s];gpuMem[MiB]");
                     IntStream.range(0, durations.size()).forEach(i -> System.out.println(i + ";" + durations.get(i).getDur() / 1000 + ";" + durations.get(i).getMem()/1024/1024));
                 }
             }
-
-
-
         }
     }
 
