@@ -8,13 +8,14 @@ import ai.djl.modality.Classifications;
 import ai.djl.modality.cv.Image;
 import ai.djl.modality.cv.ImageFactory;
 import ai.djl.modality.cv.util.NDImageUtils;
+import ai.djl.ndarray.BaseNDManager;
 import ai.djl.ndarray.NDArray;
 import ai.djl.ndarray.NDList;
 import ai.djl.ndarray.types.Shape;
 import ai.djl.nn.Block;
+import ai.djl.pytorch.engine.PtNDManager;
 import ai.djl.training.DefaultTrainingConfig;
 import ai.djl.training.EasyTrain;
-import ai.djl.training.GradientCollector;
 import ai.djl.training.Trainer;
 import ai.djl.training.dataset.Dataset;
 import ai.djl.training.dataset.RandomAccessDataset;
@@ -91,45 +92,44 @@ public final class Main {
             try (Trainer trainer = model.newTrainer(config)) {
                 trainer.setMetrics(new Metrics());
                 trainer.initialize(inputShape);
-                    for (int epoch = 0; epoch < arguments.epoch; epoch++) {
+                for (int epoch = 0; epoch < arguments.epoch; epoch++) {
 
-                        // training
-                        log.info("Training epoch = {}", epoch);
-                        DurAndMem duration = new DurAndMem();
-                        duration.on();
+                    // training
+                    log.info("Training epoch = {}", epoch);
+                    DurAndMem duration = new DurAndMem();
+                    duration.on();
 
-                        EasyTrain.fit(trainer, 1, trainingSet, validateSet);
+                    EasyTrain.fit(trainer, 1, trainingSet, validateSet);
 
-                        duration.off();
-                        durations.add(duration);
-                        System.out.println("epoch;duration[ms];gpuMem[MiB]");
-                        IntStream.range(0, durations.size()).forEach(i -> System.out.println(i + ";" + durations.get(i).getDur() + ";" + durations.get(i).getMem() / 1024 / 1024));
+                    duration.off();
+                    durations.add(duration);
+                    System.out.println("epoch;duration[ms];gpuMem[MiB]");
+                    IntStream.range(0, durations.size()).forEach(i -> System.out.println(i + ";" + durations.get(i).getDur() + ";" + durations.get(i).getMem() / 1024 / 1024));
 
 
-                        // inference
-                        try (var predictor = model.newPredictor(getImageClassificationsTranslator()) ) {
+                    // inference
+                    try (var predictor = model.newPredictor(getImageClassificationsTranslator())) {
 
-                            int[] errorsTotal = {0, 0};
-                            data.forEach((label, images) -> images.forEach(image -> {
-                                try {
-                                    var classifications = predictor.predict(image);
-                                    if (!classifications.best().getClassName().equals(label)) {
-                                        errorsTotal[0]++;
-                                    }
-                                    errorsTotal[1]++;
-                                } catch (Exception e) {
-                                    e.printStackTrace();
-                                    throw new RuntimeException(e);
+                        int[] errorsTotal = {0, 0};
+                        data.forEach((label, images) -> images.forEach(image -> {
+                            try {
+                                var classifications = predictor.predict(image);
+                                if (!classifications.best().getClassName().equals(label)) {
+                                    errorsTotal[0]++;
                                 }
-                            }));
+                                errorsTotal[1]++;
+                            } catch (Exception e) {
+                                e.printStackTrace();
+                                throw new RuntimeException(e);
+                            }
+                        }));
 
 
-                            log.info("{} wrong classified images in {} non trained testimages", errorsTotal[0], errorsTotal[1]);
-                        }
-
-
-
+                        log.info("{} wrong classified images in {} non trained testimages", errorsTotal[0], errorsTotal[1]);
                     }
+                    ((BaseNDManager) model.getNDManager().getParentManager()).debugDump(0);
+
+                }
             }
         }
     }
