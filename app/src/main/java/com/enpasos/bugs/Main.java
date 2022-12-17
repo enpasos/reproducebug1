@@ -4,6 +4,12 @@ import ai.djl.Model;
 import ai.djl.basicdataset.cv.classification.Mnist;
 import ai.djl.engine.Engine;
 import ai.djl.metric.Metrics;
+import ai.djl.modality.Classifications;
+import ai.djl.modality.cv.Image;
+import ai.djl.modality.cv.ImageFactory;
+import ai.djl.modality.cv.util.NDImageUtils;
+import ai.djl.ndarray.NDArray;
+import ai.djl.ndarray.NDList;
 import ai.djl.ndarray.types.Shape;
 import ai.djl.nn.Block;
 import ai.djl.training.DefaultTrainingConfig;
@@ -17,13 +23,23 @@ import ai.djl.training.listener.SaveModelTrainingListener;
 import ai.djl.training.listener.TrainingListener;
 import ai.djl.training.loss.Loss;
 import ai.djl.training.util.ProgressBar;
+import ai.djl.translate.Batchifier;
 import ai.djl.translate.TranslateException;
+import ai.djl.translate.Translator;
+import ai.djl.translate.TranslatorContext;
 import lombok.extern.slf4j.Slf4j;
 
 import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.TreeMap;
+import java.util.stream.Collectors;
 import java.util.stream.IntStream;
+import java.util.stream.Stream;
 
 
 /**
@@ -40,12 +56,18 @@ public final class Main {
     }
 
     public static void main(String[] args) throws IOException, TranslateException {
-        String[] args2 = {"-e", "1", "-b", "10", "-o", "mymodel"};
-        Main.runExample(args2);
-    }
 
-    public static void runExample(String[] args) throws IOException, TranslateException {
-        Arguments arguments = new Arguments().parseArgs(args);
+
+        boolean isGarbageCollectionOn = false;
+
+        if(args.length > 0 && args[0].equals("gc")) {
+            isGarbageCollectionOn = true;
+        }
+
+        String[] args2 = {"-e", "10", "-b", "10", "-o", "mymodel"};
+
+
+        Arguments arguments = new Arguments().parseArgs(args2);
         if (arguments == null) {
             return;
         }
@@ -53,9 +75,12 @@ public final class Main {
         RandomAccessDataset trainingSet = getDataset(Dataset.Usage.TRAIN, arguments);
         RandomAccessDataset validateSet = getDataset(Dataset.Usage.TEST, arguments);
 
-        Block block = MnistBlock.newMnistBlock2();
 
-        try (Model model = Model.newInstance("mymodel")) {
+        Map<String, List<Image>> data = getData("./app/data/");
+
+        Block block = MnistBlock.newMnistBlock();
+
+        try (Model model = Model.newInstance("mymodel", isGarbageCollectionOn)) {
             model.setBlock(block);
 
             DefaultTrainingConfig config = setupTrainingConfig(arguments);
@@ -63,31 +88,110 @@ public final class Main {
 
             List<DurAndMem> durations = new ArrayList<>();
 
-            List<DurAndMem> durations2 = new ArrayList<>();
-
             try (Trainer trainer = model.newTrainer(config)) {
                 trainer.setMetrics(new Metrics());
                 trainer.initialize(inputShape);
-             //   try (GradientCollector collector = trainer.newGradientCollector()) {
-                    for (int epoch = 0; epoch < 30; epoch++) {
+                    for (int epoch = 0; epoch < arguments.epoch; epoch++) {
+
+                        // training
                         log.info("Training epoch = {}", epoch);
                         DurAndMem duration = new DurAndMem();
                         duration.on();
 
-                        MyEasyTrain.fit(trainer, 1, trainingSet, validateSet, durations2 );
+                        EasyTrain.fit(trainer, 1, trainingSet, validateSet);
 
                         duration.off();
                         durations.add(duration);
-                        System.out.println("epoch;duration[s];gpuMem[MiB]");
-                        IntStream.range(0, durations.size()).forEach(i -> System.out.println(i + ";" + durations.get(i).getDur() / 1000 + ";" + durations.get(i).getMem() / 1024 / 1024));
+                        System.out.println("epoch;duration[ms];gpuMem[MiB]");
+                        IntStream.range(0, durations.size()).forEach(i -> System.out.println(i + ";" + durations.get(i).getDur() + ";" + durations.get(i).getMem() / 1024 / 1024));
 
-//                        System.out.println("epoch;duration2[ms];gpuMem[B]");
-//                        IntStream.range(0, durations2.size()).forEach(i -> System.out.println(i + ";" + durations2.get(i).getDur()  + ";" + durations2.get(i).getMem() ));
+
+                        // inference
+                        try (var predictor = model.newPredictor(getImageClassificationsTranslator()) ) {
+
+                            int[] errorsTotal = {0, 0};
+                            data.forEach((label, images) -> images.forEach(image -> {
+                                try {
+                                    var classifications = predictor.predict(image);
+                                    if (!classifications.best().getClassName().equals(label)) {
+                                        errorsTotal[0]++;
+                                    }
+                                    errorsTotal[1]++;
+                                } catch (Exception e) {
+                                    e.printStackTrace();
+                                    throw new RuntimeException(e);
+                                }
+                            }));
+
+
+                            log.info("{} wrong classified images in {} non trained testimages", errorsTotal[0], errorsTotal[1]);
+                        }
+
+
+
                     }
-             //   }
             }
         }
     }
+
+    private static Map<String, List<Image>> getData(String dataPath) {
+        Map<String, List<Image>> data = new TreeMap<>();
+        try (Stream<Path> stream = Files.list(Paths.get(dataPath))) {
+            stream.filter(Files::isDirectory)
+                .map(Path::getFileName)
+                .forEach(dirname -> {
+                    List<Image> images = new ArrayList<>();
+                    data.put(dirname.toString(), images);
+                    try (Stream<Path> stream2 = Files.list(Paths.get(dataPath + dirname + "/"))) {
+                        stream2
+                            .filter(file -> !Files.isDirectory(file))
+                            .forEach(path -> {
+                                try {
+                                    images.add(ImageFactory.getInstance().fromFile(path));
+                                } catch (Exception e) {
+                                    e.printStackTrace();
+                                    throw new RuntimeException(e);
+                                }
+                            });
+                    } catch (Exception e) {
+                        e.printStackTrace();
+                        throw new RuntimeException(e);
+                    }
+                });
+        } catch (Exception e) {
+            e.printStackTrace();
+            throw new RuntimeException(e);
+        }
+        return data;
+    }
+
+    private static Translator<Image, Classifications> getImageClassificationsTranslator() {
+        return new Translator<>() {
+
+            @Override
+            public NDList processInput(TranslatorContext ctx, Image input) {
+                // Convert Image to NDArray
+                NDArray array = input.toNDArray(ctx.getNDManager(), Image.Flag.GRAYSCALE);
+                return new NDList(NDImageUtils.toTensor(array));
+            }
+
+            @Override
+            public Classifications processOutput(TranslatorContext ctx, NDList list) {
+                // Create a Classifications with the output probabilities
+                NDArray probabilities = list.singletonOrThrow().softmax(0);
+                List<String> classNames = IntStream.range(0, 10).mapToObj(String::valueOf).collect(Collectors.toList());
+                return new Classifications(classNames, probabilities);
+            }
+
+            @Override
+            public Batchifier getBatchifier() {
+                // The Batchifier describes how to combine a batch together
+                // Stacking, the most common batchifier, takes N [X1, X2, ...] arrays to a single [N, X1, X2, ...] array
+                return Batchifier.STACK;
+            }
+        };
+    }
+
 
     private static DefaultTrainingConfig setupTrainingConfig(Arguments arguments) {
         String outputDir = arguments.getOutputDir();
