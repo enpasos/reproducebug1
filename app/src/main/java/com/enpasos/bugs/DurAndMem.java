@@ -47,7 +47,7 @@ public class DurAndMem {
     }
 
 
-    private long calculateMem() {
+    static public long calculateMem() {
         Device device = Device.gpu(0);
         MemoryUsage mem = CudaUtils.getGpuMemory(device);
         return mem.getCommitted();

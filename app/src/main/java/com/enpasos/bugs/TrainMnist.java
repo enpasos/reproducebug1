@@ -17,12 +17,16 @@ import ai.djl.basicdataset.cv.classification.Mnist;
 import ai.djl.basicmodelzoo.basic.Mlp;
 import ai.djl.engine.Engine;
 import ai.djl.metric.Metrics;
+import ai.djl.ndarray.NDManager;
+import ai.djl.ndarray.gc.SwitchGarbageCollection;
 import ai.djl.ndarray.types.Shape;
 import ai.djl.nn.Block;
+import ai.djl.pytorch.jni.JniUtils;
 import ai.djl.training.DefaultTrainingConfig;
 import ai.djl.training.EasyTrain;
 import ai.djl.training.Trainer;
 import ai.djl.training.TrainingResult;
+import ai.djl.training.dataset.Batch;
 import ai.djl.training.dataset.Dataset;
 import ai.djl.training.dataset.RandomAccessDataset;
 import ai.djl.training.evaluator.Accuracy;
@@ -31,12 +35,17 @@ import ai.djl.training.listener.TrainingListener;
 import ai.djl.training.loss.Loss;
 import ai.djl.training.util.ProgressBar;
 import ai.djl.translate.TranslateException;
+import ai.djl.util.cuda.CudaUtils;
 import lombok.extern.slf4j.Slf4j;
 
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.IntStream;
+
+import static ai.djl.pytorch.engine.PtNDManager.debugDumpFromSystemManager;
+import static com.enpasos.bugs.DurAndMem.calculateMem;
 
 /**
  * An example of training an image classification (MNIST) model.
@@ -50,15 +59,10 @@ public final class TrainMnist {
 
     private TrainMnist() {}
 
-    public static void main(String[] args) throws IOException, TranslateException {
-        TrainMnist.runExample(args);
-    }
-
-    public static TrainingResult runExample(String[] args) throws IOException, TranslateException {
-        boolean isGarbageCollectionOn = false;
+    public static void main(String[] args) throws IOException, TranslateException, InterruptedException {
 
         if(args.length > 0 && args[0].equals("gc")) {
-            isGarbageCollectionOn = true;
+            SwitchGarbageCollection.on();
         }
 
         String[] args2 = {"-e", "10", "-b", "10", "-o", "mymodel"};
@@ -66,57 +70,96 @@ public final class TrainMnist {
 
         Arguments arguments = new Arguments().parseArgs(args2);
         if (arguments == null) {
-            return null;
+            return;
         }
 
-        // Construct neural network
-        Block block =
-            new Mlp(
-                Mnist.IMAGE_HEIGHT * Mnist.IMAGE_WIDTH,
-                Mnist.NUM_CLASSES,
-                new int[] {128, 64});
+      //  for (int W = 0; W < 2; W++) {
 
-        try (Model model = Model.newInstance("mlp", isGarbageCollectionOn)) {
-            model.setBlock(block);
 
-            // get training and validation dataset
-            RandomAccessDataset trainingSet = getDataset(Dataset.Usage.TRAIN, arguments);
-            RandomAccessDataset validateSet = getDataset(Dataset.Usage.TEST, arguments);
+            // Construct neural network
+            Block block =
+                new Mlp(
+                    Mnist.IMAGE_HEIGHT * Mnist.IMAGE_WIDTH,
+                    Mnist.NUM_CLASSES,
+                    new int[]{128, 64});
 
-            // setup training configuration
-            DefaultTrainingConfig config = setupTrainingConfig(arguments);
+            try (Model model = Model.newInstance("mlp")) {
+                model.setBlock(block);
 
-            try (Trainer trainer = model.newTrainer(config)) {
-                trainer.setMetrics(new Metrics());
+                // get training and validation dataset
+                RandomAccessDataset trainingSet = getDataset(Dataset.Usage.TRAIN, arguments, model.getNDManager());
+                RandomAccessDataset validateSet = getDataset(Dataset.Usage.TEST, arguments, model.getNDManager());
 
-                /*
-                 * MNIST is 28x28 grayscale image and pre processed into 28 * 28 NDArray.
-                 * 1st axis is batch axis, we can use 1 for initialization.
-                 */
-                Shape inputShape = new Shape(1, Mnist.IMAGE_HEIGHT * Mnist.IMAGE_WIDTH);
+                // setup training configuration
+                DefaultTrainingConfig config = setupTrainingConfig(arguments);
 
-                // initialize trainer with proper input shape
-                trainer.initialize(inputShape);
+                try (Trainer trainer = model.newTrainer(config)) {
+                    trainer.setMetrics(new Metrics());
 
-                List<DurAndMem> durations = new ArrayList<>();
+                    /*
+                     * MNIST is 28x28 grayscale image and pre processed into 28 * 28 NDArray.
+                     * 1st axis is batch axis, we can use 1 for initialization.
+                     */
+                    Shape inputShape = new Shape(1, Mnist.IMAGE_HEIGHT * Mnist.IMAGE_WIDTH);
 
-                for (int epoch = 0; epoch < arguments.epoch; epoch++) {
+                    // initialize trainer with proper input shape
+                    trainer.initialize(inputShape);
 
-                    // training
-                    log.info("Training epoch = {}", epoch);
-                    DurAndMem duration = new DurAndMem();
-                    duration.on();
-                    EasyTrain.fit(trainer, 1, trainingSet, validateSet);
-                    duration.off();
-                    durations.add(duration);
-                    System.out.println("epoch;duration[ms];gpuMem[MiB]");
-                    IntStream.range(0, durations.size()).forEach(i -> System.out.println(i + ";" + durations.get(i).getDur() + ";" + durations.get(i).getMem() / 1024 / 1024));
+                    List<DurAndMem> durations = new ArrayList<>();
+
+                    for (int epoch = 0; epoch < arguments.epoch; epoch++) {
+
+                        // training
+                        log.info("Training epoch = {}", epoch);
+                        DurAndMem duration = new DurAndMem();
+                        duration.on();
+                        // We iterate through the dataset once during each epoch
+                        for (Batch batch : trainer.iterateDataset(trainingSet)) {
+
+                            EasyTrain.trainBatch(trainer, batch);
+
+                            trainer.step();
+                            batch.close();
+                        }
+
+                        EasyTrain.evaluateDataset(trainer, validateSet);
+
+                        // reset training and validation evaluators at end of epoch
+                        trainer.notifyListeners(listener -> listener.onEpoch(trainer));
+
+                        duration.off();
+                        durations.add(duration);
+                        System.out.println("epoch;duration[ms];gpuMem[MiB]");
+                        IntStream.range(0, durations.size()).forEach(i -> System.out.println(i + ";" + durations.get(i).getDur() + ";" + durations.get(i).getMem() / 1024 / 1024));
+
+                        System.gc(); // just for testing - do not use in production
+                        TimeUnit.SECONDS.sleep(1);
+                        debugDumpFromSystemManager(false);
+
+                        log.info("gpuMem[MiB]: {}", calculateMem() / 1024 / 1024);
+
+                    }
+
                 }
 
-                    return trainer.getTrainingResult();
+                log.info("closed trainer");
+                System.gc(); // just for testing - do not use in production
+                TimeUnit.SECONDS.sleep(1);
+                debugDumpFromSystemManager(false);
+                log.info("gpuMem[MiB]: {}", calculateMem() / 1024 / 1024);
             }
+            log.info("closed model");
+            System.gc(); // just for testing - do not use in production
+            TimeUnit.SECONDS.sleep(1);
+            debugDumpFromSystemManager(false);
+            //for (int i = 0; i < 10000; i++) {
+            log.info("gpuMem[MiB] after {}s: {}", 0, calculateMem() / 1024 / 1024);
+            TimeUnit.SECONDS.sleep(1);
+
+            log.info("gpuMem[MiB] after {}s and cudaDeviceReset(): {}", 1, calculateMem() / 1024 / 1024);
+            //}
         }
-    }
+    //}
 
     private static DefaultTrainingConfig setupTrainingConfig(Arguments arguments) {
         String outputDir = arguments.getOutputDir();
@@ -136,11 +179,12 @@ public final class TrainMnist {
             .addTrainingListeners(listener);
     }
 
-    private static RandomAccessDataset getDataset(Dataset.Usage usage, Arguments arguments)
+    private static RandomAccessDataset getDataset(Dataset.Usage usage, Arguments arguments, NDManager manager)
         throws IOException {
         Mnist mnist =
             Mnist.builder()
                 .optUsage(usage)
+                .optManager(manager)
                 .setSampling(arguments.getBatchSize(), true)
                 .optLimit(arguments.getLimit())
                 .build();
